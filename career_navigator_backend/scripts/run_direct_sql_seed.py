@@ -56,11 +56,15 @@ TOP_LOG_DIR = WORKSPACE_ROOT / "logs"
 TOP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 COUNTS_REPORT_TOP = TOP_LOG_DIR / "counts_report.json"
 COUNTS_REPORT_BACKEND = LOG_DIR / "counts_report.json"
+REPO_LOG_DIR = REPO_ROOT / "logs"
+REPO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+COUNTS_REPORT_REPO = REPO_LOG_DIR / "counts_report.json"
 
 # Provided by request details (reordered to ensure pgcrypto is created first)
 DDL_STATEMENTS: List[str] = [
     # Extensions needed for UUID gen (Supabase usually has it)
     "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
+    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";",
     # SCHEMA: roles
     """
     CREATE TABLE IF NOT EXISTS roles (
@@ -891,6 +895,7 @@ def main():
     # Also write counts-only report to top-level and backend logs
     COUNTS_REPORT_TOP.write_text(json.dumps(verification, indent=2))
     COUNTS_REPORT_BACKEND.write_text(json.dumps(verification, indent=2))
+    COUNTS_REPORT_REPO.write_text(json.dumps(verification, indent=2))
 
     # Save/print
     REPORT_PATH.write_text(json.dumps(report, indent=2))

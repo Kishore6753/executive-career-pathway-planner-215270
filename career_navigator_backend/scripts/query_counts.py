@@ -37,6 +37,11 @@ TOP_LOG_DIR = WORKSPACE_ROOT / "logs"
 TOP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 TOP_REPORT_PATH = TOP_LOG_DIR / "counts_report.json"
 
+# Also write a counts report at the repository-level logs directory
+REPO_LOG_DIR = REPO_ROOT / "logs"
+REPO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+REPO_REPORT_PATH = REPO_LOG_DIR / "counts_report.json"
+
 
 def read_first_nonempty_line(p: Path) -> Optional[str]:
     if not p.exists():
@@ -112,12 +117,14 @@ def main() -> None:
         text = json.dumps(results, indent=2)
         REPORT_PATH.write_text(text)
         TOP_REPORT_PATH.write_text(text)
+        REPO_REPORT_PATH.write_text(text)
         print(text)
     except Exception as e:
         error = {"error": str(e)}
         text = json.dumps(error, indent=2)
         REPORT_PATH.write_text(text)
         TOP_REPORT_PATH.write_text(text)
+        REPO_REPORT_PATH.write_text(text)
         print(text, file=sys.stderr)
         sys.exit(1)
 
