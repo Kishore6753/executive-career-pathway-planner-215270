@@ -1,0 +1,2 @@
+Alembic migrations for Career Navigator backend.
+Initial migration creates schema, tables, constraints, indexes, and RLS policies compatible with Supabase.
