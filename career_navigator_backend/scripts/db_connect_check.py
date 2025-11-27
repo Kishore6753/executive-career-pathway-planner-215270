@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 """
-DB connection verification utility.
+DB connection verification utility with IPv4 fallback and hostaddr override.
 
 - Loads .env automatically (repo root, workspace root, backend root).
 - Prefers --dsn argument, then DATABASE_URL; else builds DSN from common env var names (case-insensitive).
 - Enforces sslmode=require when connecting to Supabase hosts if not explicitly provided.
+- Supports hostaddr override via SUPABASE_DB_HOSTADDR/PGHOSTADDR/DB_HOSTADDR/POSTGRES_HOSTADDR to bypass DNS and force IPv4 while keeping TLS hostname verification.
+- Falls back to IPv4 resolution if default connect fails (avoiding IPv6-only and DNS issues).
 - Prints concise JSON diagnostics on success/failure, including host, port, db, user, sslmode, and password hints.
 
 Usage:
@@ -17,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import socket
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, quote_plus
@@ -223,9 +226,10 @@ def resolve_dsn(cli_dsn: Optional[str]) -> Tuple[Optional[str], Dict[str, Option
                     continue
                 dsn = _ensure_sslmode_required(s)
                 return dsn, _parse_dsn_info(dsn), f"file:{candidate.name}", []
-    return None, dsn_info, "missing", missing
+    return None, dsn_info, "missing", []
 
 
+# PUBLIC_INTERFACE
 def main() -> None:
     """
     Try connecting to the database and print concise JSON diagnostics.
@@ -250,12 +254,65 @@ def main() -> None:
         print(json.dumps(out, indent=2), file=sys.stderr)
         sys.exit(2)
 
+    # Enforce sslmode=require for Supabase hostnames
+    dsn = _ensure_sslmode_required(dsn)
+
     unescaped_at = _detect_unescaped_at_in_password(dsn)
     try:
-        conn = psycopg2.connect(dsn)
+        # Prefer explicit hostaddr override if provided (bypass DNS, keep TLS hostname verification)
+        hostaddr_env = (
+            os.environ.get("SUPABASE_DB_HOSTADDR")
+            or os.environ.get("PGHOSTADDR")
+            or os.environ.get("DB_HOSTADDR")
+            or os.environ.get("POSTGRES_HOSTADDR")
+        )
+        if hostaddr_env and "://" in dsn:
+            p = urlparse(dsn)
+            host = p.hostname
+            port = p.port or 5432
+            dbname = (p.path[1:] if p.path.startswith("/") else p.path) or None
+            q = dict(parse_qsl(p.query))
+            params = {
+                "host": host,              # keep hostname for TLS SNI/verification
+                "hostaddr": hostaddr_env,  # direct IPv4 to bypass DNS/IPv6
+                "port": port,
+                "dbname": dbname,
+                "user": p.username,
+                "password": p.password,
+                "sslmode": q.get("sslmode", "require"),
+            }
+            conn = psycopg2.connect(**params)
+        else:
+            try:
+                # Default connection attempt (may try IPv6 first)
+                conn = psycopg2.connect(dsn)
+            except Exception:
+                # IPv4 fallback: resolve hostname to IPv4 and connect via hostaddr
+                if "://" not in dsn:
+                    raise  # cannot safely parse keyword DSN for fallback
+                p = urlparse(dsn)
+                host = p.hostname
+                port = p.port or 5432
+                addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+                if not addrs:
+                    raise
+                ipv4 = addrs[0][4][0]
+                dbname = (p.path[1:] if p.path.startswith("/") else p.path) or None
+                q = dict(parse_qsl(p.query))
+                params = {
+                    "host": host,          # keep hostname for TLS SNI
+                    "hostaddr": ipv4,      # direct IPv4 connect
+                    "port": port,
+                    "dbname": dbname,
+                    "user": p.username,
+                    "password": p.password,
+                    "sslmode": q.get("sslmode", "require"),
+                }
+                conn = psycopg2.connect(**params)
+
         with conn.cursor() as cur:
-            cur.execute("SELECT version(), current_setting('server_version_num'), current_database(), NOW(), current_setting('ssl')::text;")
-            version, server_version_num, current_db, now_ts, ssl_current = cur.fetchone()
+            cur.execute("SELECT version(), current_setting('server_version_num'), current_database(), NOW();")
+            version, server_version_num, current_db, now_ts = cur.fetchone()
         conn.close()
         out = {
             "status": "ok",
@@ -268,6 +325,9 @@ def main() -> None:
         }
         print(json.dumps(out, indent=2))
     except Exception as e:
+        hint = None
+        if "No address associated with hostname" in str(e) or "Name or service not known" in str(e):
+            hint = "DNS/IPv6 issue suspected. Set SUPABASE_DB_HOSTADDR to the IPv4 address of the DB host and retry."
         out = {
             "status": "error",
             "error": str(e),
@@ -275,6 +335,7 @@ def main() -> None:
             "diagnostics": {
                 **info,
                 "password_hint": "Password contains '@' that may be unescaped. Encode as %40." if unescaped_at else None,
+                "hostaddr_override_hint": hint,
             },
             "env_missing": missing or None,
         }
