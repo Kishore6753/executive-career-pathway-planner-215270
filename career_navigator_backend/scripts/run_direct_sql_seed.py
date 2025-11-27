@@ -42,6 +42,9 @@ from psycopg2.extras import execute_batch
 # ---------- Paths and constants ----------
 HERE = Path(__file__).resolve()
 BACKEND_ROOT = HERE.parents[1]
+# Repository root (e.g., executive-career-pathway-planner-215270)
+REPO_ROOT = HERE.parents[2]
+# Workspace root (top-level code-generation workspace)
 WORKSPACE_ROOT = HERE.parents[3]
 ATTACH_DIR = WORKSPACE_ROOT / "attachments"
 LOG_DIR = BACKEND_ROOT / "logs"
@@ -311,10 +314,11 @@ def get_database_url() -> Optional[str]:
     env = os.getenv("DATABASE_URL")
     if env:
         return env
-    # look for db_connection.txt at workspace root
+    # Search in common locations for db_connection.txt
     candidate_files = [
-        WORKSPACE_ROOT / "db_connection.txt",
-        BACKEND_ROOT / "db_connection.txt",
+        REPO_ROOT / "db_connection.txt",        # repo root (recommended per README)
+        WORKSPACE_ROOT / "db_connection.txt",   # workspace root fallback
+        BACKEND_ROOT / "db_connection.txt",     # backend folder fallback
     ]
     for c in candidate_files:
         dsn = read_first_nonempty_line(c)
