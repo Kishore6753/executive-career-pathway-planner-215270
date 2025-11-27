@@ -1,0 +1,9 @@
+# Postgres connection string for direct seeding (first non-empty, non-comment line is used)
+# Copy to "db_connection.txt" (same folder) or set DATABASE_URL in environment.
+# Do NOT commit real secrets.
+
+# Format:
+# postgresql://<USER>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>?sslmode=require
+
+# Example:
+# postgresql://postgres:supersecret@db.example.com:5432/career_navigator?sslmode=require
