@@ -233,7 +233,7 @@ DDL_STATEMENTS: List[str] = [
 ]
 
 RLS_AND_POLICIES: List[str] = [
-    -- Enable RLS on system tables
+    # Enable RLS on system tables
     "ALTER TABLE roles ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE competencies ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE role_competencies ENABLE ROW LEVEL SECURITY;",
@@ -241,7 +241,7 @@ RLS_AND_POLICIES: List[str] = [
     "ALTER TABLE role_cards ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE learning_resources ENABLE ROW LEVEL SECURITY;",
 
-    -- Enable RLS on user-owned tables
+    # Enable RLS on user-owned tables
     "ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE user_competencies ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE progress_events ENABLE ROW LEVEL SECURITY;",
@@ -251,7 +251,7 @@ RLS_AND_POLICIES: List[str] = [
     "ALTER TABLE sponsors ENABLE ROW LEVEL SECURITY;",
     "ALTER TABLE evidence ENABLE ROW LEVEL SECURITY;",
 
-    -- Read policies for system tables (authenticated users)
+    # Read policies for system tables (authenticated users)
     "DROP POLICY IF EXISTS roles_read_auth ON roles;",
     "CREATE POLICY roles_read_auth ON roles FOR SELECT USING (auth.role() IN ('authenticated','service_role','admin'));",
     "DROP POLICY IF EXISTS competencies_read_auth ON competencies;",
@@ -265,7 +265,7 @@ RLS_AND_POLICIES: List[str] = [
     "DROP POLICY IF EXISTS learning_resources_read_auth ON learning_resources;",
     "CREATE POLICY learning_resources_read_auth ON learning_resources FOR SELECT USING (auth.role() IN ('authenticated','service_role','admin'));",
 
-    -- Admin/service_role write policies for system tables
+    # Admin/service_role write policies for system tables
     "DROP POLICY IF EXISTS roles_admin_write ON roles;",
     "CREATE POLICY roles_admin_write ON roles FOR ALL USING (auth.role() IN ('service_role','admin')) WITH CHECK (auth.role() IN ('service_role','admin'));",
     "DROP POLICY IF EXISTS competencies_admin_write ON competencies;",
@@ -279,14 +279,14 @@ RLS_AND_POLICIES: List[str] = [
     "DROP POLICY IF EXISTS learning_resources_admin_write ON learning_resources;",
     "CREATE POLICY learning_resources_admin_write ON learning_resources FOR ALL USING (auth.role() IN ('service_role','admin')) WITH CHECK (auth.role() IN ('service_role','admin'));",
 
-    -- Owner read/write policies for user-owned tables (user_id = auth.uid())
+    # Owner read/write policies for user-owned tables (user_id = auth.uid())
     "DROP POLICY IF EXISTS profiles_owner_rw ON profiles;",
     "CREATE POLICY profiles_owner_rw ON profiles USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());",
     "DROP POLICY IF EXISTS user_competencies_owner_rw ON user_competencies;",
     "CREATE POLICY user_competencies_owner_rw ON user_competencies USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());",
     "DROP POLICY IF EXISTS progress_events_owner_rw ON progress_events;",
     "CREATE POLICY progress_events_owner_rw ON progress_events USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());",
-    -- assessments table (direct schema uses profile_id); allow read for authenticated and admin writes
+    # assessments table (direct schema uses profile_id); allow read for authenticated
     "DROP POLICY IF EXISTS assessments_read_auth ON assessments;",
     "CREATE POLICY assessments_read_auth ON assessments FOR SELECT USING (auth.role() IN ('authenticated','service_role','admin'));",
     "DROP POLICY IF EXISTS self_competency_ratings_owner_rw ON self_competency_ratings;",
@@ -296,7 +296,7 @@ RLS_AND_POLICIES: List[str] = [
     "DROP POLICY IF EXISTS sponsors_owner_rw ON sponsors;",
     "CREATE POLICY sponsors_owner_rw ON sponsors USING (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid())) WITH CHECK (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid()));",
     "DROP POLICY IF EXISTS evidence_owner_rw ON evidence;",
-    "CREATE POLICY evidence_owner_rw ON evidence USING (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid())) WITH CHECK (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid()));"
+    "CREATE POLICY evidence_owner_rw ON evidence USING (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid())) WITH CHECK (profile_id IN (SELECT id FROM profiles WHERE user_id = auth.uid()));",
 ]
 
 POST_SEED_VERIFICATION = [
