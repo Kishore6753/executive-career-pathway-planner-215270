@@ -3,24 +3,30 @@ Counts verification utility for Career Navigator tables.
 
 Usage:
   cd executive-career-pathway-planner-215270/career_navigator_backend
-  python -m scripts.query_counts
+  python -m scripts.query_counts [--dsn "postgresql://..."]
 
-Connection precedence:
-  1) DATABASE_URL environment variable
+Connection precedence when --dsn not provided:
+  1) DATABASE_URL environment variable (after loading .env)
   2) db_connection.txt at repository root (executive-career-pathway-planner-215270/db_connection.txt)
      or workspace root, or backend folder (fallback)
 
 Outputs:
   - Prints a JSON dict to stdout with table counts
-  - Writes the same to logs/counts_report.json
+  - Writes the same to:
+      - executive-career-pathway-planner-215270/career_navigator_backend/logs/counts_report.json
+      - executive-career-pathway-planner-215270/logs/counts_report.json
+      - logs/counts_report.json at workspace root
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 from typing import Optional, Dict
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 import psycopg2
 from dotenv import load_dotenv
@@ -55,6 +61,19 @@ def read_first_nonempty_line(p: Path) -> Optional[str]:
     return None
 
 
+def _load_env_files() -> None:
+    """Load .env files from common locations."""
+    try:
+        # inherit defaults
+        load_dotenv(override=False)
+        # explicit locations
+        for candidate in [REPO_ROOT / ".env", WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"]:
+            load_dotenv(dotenv_path=candidate, override=False)
+    except Exception:
+        # swallow malformed .env for robustness
+        pass
+
+
 def get_database_url() -> Optional[str]:
     """
     Precedence:
@@ -63,12 +82,7 @@ def get_database_url() -> Optional[str]:
       3) db_connection.txt at workspace root (fallback)
       4) db_connection.txt inside backend folder (fallback)
     """
-    try:
-        load_dotenv(override=False)
-        for candidate in [REPO_ROOT / ".env", WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"]:
-            load_dotenv(dotenv_path=candidate, override=False)
-    except Exception:
-        pass
+    _load_env_files()
 
     # Prefer environment
     env = os.getenv("DATABASE_URL")
@@ -92,11 +106,74 @@ def get_database_url() -> Optional[str]:
     return None
 
 
-def connect():
-    dsn = get_database_url()
+def _is_supabase_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    h = str(host).lower()
+    return h.endswith(".supabase.co") or ".supabase.co" in h
+
+
+def _ensure_sslmode_required(dsn: str) -> str:
+    """Ensure sslmode=require for Supabase hosts if not specified."""
+    try:
+        parsed = urlparse(dsn)
+        host = parsed.hostname or ""
+        q = dict(parse_qsl(parsed.query))
+        if _is_supabase_host(host) and "sslmode" not in q:
+            q["sslmode"] = "require"
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(q), parsed.fragment))
+        return dsn
+    except Exception:
+        low = dsn.lower()
+        if "sslmode=" not in low:
+            dsn += " sslmode=require"
+        return dsn
+
+
+def connect(dsn_override: Optional[str] = None):
+    """
+    Create and return a psycopg2 connection using the resolved DSN.
+
+    Precedence:
+      - dsn_override argument
+      - DATABASE_URL/.env, then db_connection.txt lookups
+
+    For Supabase hosts, forces sslmode=require if not present.
+    Attempts IPv4 fallback if default connect fails (avoiding IPv6 issues).
+    """
+    dsn = dsn_override or get_database_url()
     if not dsn:
-        raise RuntimeError("Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root.")
-    return psycopg2.connect(dsn)
+        raise RuntimeError("Missing database connection. Provide --dsn or set DATABASE_URL or db_connection.txt at repo root.")
+    dsn = _ensure_sslmode_required(dsn)
+
+    # First attempt: normal connection string
+    try:
+        return psycopg2.connect(dsn)
+    except Exception:
+        # IPv4 fallback via hostaddr while preserving TLS hostname verification
+        try:
+            parsed = urlparse(dsn)
+            host = parsed.hostname
+            port = parsed.port or 5432
+            addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if not addrs:
+                raise RuntimeError("DNS resolution returned no IPv4 addresses.")
+            ipv4 = addrs[0][4][0]
+            dbname = (parsed.path[1:] if parsed.path.startswith("/") else parsed.path) or None
+            params = {
+                "host": host,
+                "hostaddr": ipv4,
+                "port": port,
+                "dbname": dbname,
+                "user": parsed.username,
+                "password": parsed.password,
+            }
+            q = dict(parse_qsl(parsed.query))
+            params["sslmode"] = q.get("sslmode", "require")
+            return psycopg2.connect(**params)
+        except Exception as e:
+            # Re-raise last error for visibility
+            raise e
 
 
 POST_SEED_VERIFICATION = [
@@ -110,10 +187,18 @@ POST_SEED_VERIFICATION = [
 
 # PUBLIC_INTERFACE
 def main() -> None:
-    """Run COUNT(*) queries for key tables and emit a JSON report."""
+    """Run COUNT(*) queries for key tables and emit a JSON report.
+
+    Arguments (CLI):
+      --dsn: Optional DSN override "postgresql://user:pass@host:5432/db?sslmode=require"
+    """
+    parser = argparse.ArgumentParser(description="Run COUNT(*) verification on Career Navigator core tables.")
+    parser.add_argument("--dsn", dest="dsn", default=None, help="Optional DSN override (postgresql://...)")
+    args = parser.parse_args()
+
     results: Dict[str, int] = {}
     try:
-        conn = connect()
+        conn = connect(dsn_override=args.dsn)
         with conn.cursor() as cur:
             for q in POST_SEED_VERIFICATION:
                 cur.execute(q)
