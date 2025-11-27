@@ -50,6 +50,9 @@ Steps:
    - If a table already exists, it continues; if columns differ, it logs the error and proceeds with compatible upserts where possible.
    - Writes a concise JSON report (including SELECT COUNT(*) verification) to:
        executive-career-pathway-planner-215270/career_navigator_backend/logs/direct_seed_report.json
+     - Also writes a counts-only report to:
+       - executive-career-pathway-planner-215270/logs/counts_report.json
+       - executive-career-pathway-planner-215270/career_navigator_backend/logs/counts_report.json
    - Prints the same report to stdout.
 
 Attachments expected:

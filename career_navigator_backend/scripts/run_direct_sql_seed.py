@@ -55,6 +55,7 @@ REPORT_PATH = LOG_DIR / "direct_seed_report.json"
 TOP_LOG_DIR = WORKSPACE_ROOT / "logs"
 TOP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 COUNTS_REPORT_TOP = TOP_LOG_DIR / "counts_report.json"
+COUNTS_REPORT_BACKEND = LOG_DIR / "counts_report.json"
 
 # Provided by request details (reordered to ensure pgcrypto is created first)
 DDL_STATEMENTS: List[str] = [
@@ -887,8 +888,9 @@ def main():
 
     report["verification"] = verification
 
-    # Also write counts-only report to top-level logs
+    # Also write counts-only report to top-level and backend logs
     COUNTS_REPORT_TOP.write_text(json.dumps(verification, indent=2))
+    COUNTS_REPORT_BACKEND.write_text(json.dumps(verification, indent=2))
 
     # Save/print
     REPORT_PATH.write_text(json.dumps(report, indent=2))
