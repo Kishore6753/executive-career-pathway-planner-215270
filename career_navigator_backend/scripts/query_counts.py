@@ -139,12 +139,44 @@ def connect(dsn_override: Optional[str] = None):
       - DATABASE_URL/.env, then db_connection.txt lookups
 
     For Supabase hosts, forces sslmode=require if not present.
-    Attempts IPv4 fallback if default connect fails (avoiding IPv6 issues).
+
+    Enhancements:
+    - Supports SUPABASE_DB_HOSTADDR/PGHOSTADDR/DB_HOSTADDR/POSTGRES_HOSTADDR env vars
+      to bypass DNS and force IPv4 while keeping TLS hostname verification.
+    - Attempts IPv4 fallback if default connect fails (avoiding IPv6 issues).
     """
     dsn = dsn_override or get_database_url()
     if not dsn:
         raise RuntimeError("Missing database connection. Provide --dsn or set DATABASE_URL or db_connection.txt at repo root.")
     dsn = _ensure_sslmode_required(dsn)
+
+    # Prefer explicit hostaddr override if provided
+    hostaddr_env = (
+        os.environ.get("SUPABASE_DB_HOSTADDR")
+        or os.environ.get("PGHOSTADDR")
+        or os.environ.get("DB_HOSTADDR")
+        or os.environ.get("POSTGRES_HOSTADDR")
+    )
+    if hostaddr_env:
+        try:
+            parsed = urlparse(dsn)
+            host = parsed.hostname
+            port = parsed.port or 5432
+            dbname = (parsed.path[1:] if parsed.path.startswith("/") else parsed.path) or None
+            q = dict(parse_qsl(parsed.query))
+            params = {
+                "host": host,               # keep hostname for TLS SNI/verification
+                "hostaddr": hostaddr_env,   # direct IPv4 to bypass DNS
+                "port": port,
+                "dbname": dbname,
+                "user": parsed.username,
+                "password": parsed.password,
+                "sslmode": q.get("sslmode", "require"),
+            }
+            return psycopg2.connect(**params)
+        except Exception:
+            # continue with normal attempts
+            pass
 
     # First attempt: normal connection string
     try:
@@ -160,6 +192,7 @@ def connect(dsn_override: Optional[str] = None):
                 raise RuntimeError("DNS resolution returned no IPv4 addresses.")
             ipv4 = addrs[0][4][0]
             dbname = (parsed.path[1:] if parsed.path.startswith("/") else parsed.path) or None
+            q = dict(parse_qsl(parsed.query))
             params = {
                 "host": host,
                 "hostaddr": ipv4,
@@ -167,9 +200,8 @@ def connect(dsn_override: Optional[str] = None):
                 "dbname": dbname,
                 "user": parsed.username,
                 "password": parsed.password,
+                "sslmode": q.get("sslmode", "require"),
             }
-            q = dict(parse_qsl(parsed.query))
-            params["sslmode"] = q.get("sslmode", "require")
             return psycopg2.connect(**params)
         except Exception as e:
             # Re-raise last error for visibility

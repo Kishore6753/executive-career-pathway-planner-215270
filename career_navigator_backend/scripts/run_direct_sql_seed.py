@@ -482,31 +482,63 @@ def _ensure_sslmode_required(dsn: str) -> str:
 def connect(dsn_override: Optional[str] = None) -> "psycopg2.extensions.connection":
     """
     Create a psycopg2 connection using override DSN, env/database_url, or file.
-    Ensures sslmode=require when connecting to Supabase if not specified, and
-    attempts an IPv4 fallback if IPv6 is unreachable.
+    Ensures sslmode=require when connecting to Supabase if not specified.
+
+    Enhancements:
+    - Honors SUPABASE_DB_HOSTADDR/PGHOSTADDR/DB_HOSTADDR/POSTGRES_HOSTADDR environment
+      variables to bypass DNS and force IPv4 while preserving TLS hostname verification.
+    - Falls back to IPv4 resolution via getaddrinfo if default connect fails.
     """
     dsn = dsn_override or get_database_url()
     if not dsn:
         raise RuntimeError("Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root.")
     dsn = _ensure_sslmode_required(dsn)
 
-    # First attempt: default libpq resolution
-    try:
-        return psycopg2.connect(dsn)
-    except Exception:
-        # IPv4 fallback: resolve hostname to IPv4 and use hostaddr to avoid IPv6
+    # If a hostaddr override is provided via env, prefer it to bypass DNS issues
+    hostaddr_env = (
+        os.environ.get("SUPABASE_DB_HOSTADDR")
+        or os.environ.get("PGHOSTADDR")
+        or os.environ.get("DB_HOSTADDR")
+        or os.environ.get("POSTGRES_HOSTADDR")
+    )
+    if hostaddr_env:
         try:
             p = urlparse(dsn)
             host = p.hostname
             port = p.port or 5432
-            # Lookup IPv4 addresses only
+            dbname = (p.path[1:] if p.path.startswith("/") else p.path) or None
+            q = dict(parse_qsl(p.query))
+            params = {
+                "host": host,               # keep hostname for TLS SNI/verification
+                "hostaddr": hostaddr_env,   # direct IPv4 to bypass DNS
+                "port": port,
+                "dbname": dbname,
+                "user": p.username,
+                "password": p.password,
+                "sslmode": q.get("sslmode", "require"),
+            }
+            return psycopg2.connect(**params)
+        except Exception:
+            # continue to normal attempts
+            pass
+
+    # First attempt: default libpq resolution
+    try:
+        return psycopg2.connect(dsn)
+    except Exception:
+        # IPv4 fallback: resolve hostname to IPv4 and use hostaddr to avoid IPv6/DNS edge cases
+        try:
+            p = urlparse(dsn)
+            host = p.hostname
+            port = p.port or 5432
             addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
             if not addrs:
-                raise
+                raise RuntimeError("DNS resolution returned no IPv4 addresses.")
             ipv4 = addrs[0][4][0]
 
             # Build keyword params preserving TLS host verification (host + hostaddr)
             dbname = (p.path[1:] if p.path.startswith("/") else p.path) or None
+            q = dict(parse_qsl(p.query))
             params = {
                 "host": host,
                 "hostaddr": ipv4,
@@ -514,9 +546,8 @@ def connect(dsn_override: Optional[str] = None) -> "psycopg2.extensions.connecti
                 "dbname": dbname,
                 "user": p.username,
                 "password": p.password,
+                "sslmode": q.get("sslmode", "require"),
             }
-            q = dict(parse_qsl(p.query))
-            params["sslmode"] = q.get("sslmode", "require")
             return psycopg2.connect(**params)
         except Exception as e:
             # Re-raise the original failure if fallback also fails
