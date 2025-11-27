@@ -32,6 +32,11 @@ LOG_DIR = BACKEND_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_PATH = LOG_DIR / "counts_report.json"
 
+# Also emit a counts report at the workspace-level logs directory
+TOP_LOG_DIR = WORKSPACE_ROOT / "logs"
+TOP_LOG_DIR.mkdir(parents=True, exist_ok=True)
+TOP_REPORT_PATH = TOP_LOG_DIR / "counts_report.json"
+
 
 def read_first_nonempty_line(p: Path) -> Optional[str]:
     if not p.exists():
@@ -45,12 +50,26 @@ def read_first_nonempty_line(p: Path) -> Optional[str]:
 
 
 def get_database_url() -> Optional[str]:
+    """
+    Precedence:
+      1) db_connection.txt at repository root
+      2) DATABASE_URL environment variable
+      3) db_connection.txt at workspace root (fallback)
+      4) db_connection.txt inside backend folder (fallback)
+    """
+    # Prefer repo-root db_connection.txt
+    primary_file = REPO_ROOT / "db_connection.txt"
+    dsn = read_first_nonempty_line(primary_file)
+    if dsn:
+        return dsn
+
+    # Then environment
     env = os.getenv("DATABASE_URL")
     if env:
         return env
-    # Search for db_connection.txt
+
+    # Fallback files
     for candidate in [
-        REPO_ROOT / "db_connection.txt",
         WORKSPACE_ROOT / "db_connection.txt",
         BACKEND_ROOT / "db_connection.txt",
     ]:
@@ -90,12 +109,16 @@ def main() -> None:
                 results[colname] = int(row[0])
         conn.commit()
         conn.close()
-        REPORT_PATH.write_text(json.dumps(results, indent=2))
-        print(json.dumps(results, indent=2))
+        text = json.dumps(results, indent=2)
+        REPORT_PATH.write_text(text)
+        TOP_REPORT_PATH.write_text(text)
+        print(text)
     except Exception as e:
         error = {"error": str(e)}
-        REPORT_PATH.write_text(json.dumps(error, indent=2))
-        print(json.dumps(error, indent=2), file=sys.stderr)
+        text = json.dumps(error, indent=2)
+        REPORT_PATH.write_text(text)
+        TOP_REPORT_PATH.write_text(text)
+        print(text, file=sys.stderr)
         sys.exit(1)
 
 

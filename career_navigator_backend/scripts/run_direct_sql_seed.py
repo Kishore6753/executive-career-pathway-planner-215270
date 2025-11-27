@@ -51,6 +51,11 @@ LOG_DIR = BACKEND_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_PATH = LOG_DIR / "direct_seed_report.json"
 
+# Top-level logs path for counts report
+TOP_LOG_DIR = WORKSPACE_ROOT / "logs"
+TOP_LOG_DIR.mkdir(parents=True, exist_ok=True)
+COUNTS_REPORT_TOP = TOP_LOG_DIR / "counts_report.json"
+
 # Provided by request details (reordered to ensure pgcrypto is created first)
 DDL_STATEMENTS: List[str] = [
     # Extensions needed for UUID gen (Supabase usually has it)
@@ -378,16 +383,31 @@ def read_first_nonempty_line(p: Path) -> Optional[str]:
 
 
 def get_database_url() -> Optional[str]:
+    """
+    Determine database connection string.
+
+    Precedence:
+      1) db_connection.txt at repository root (first non-empty, non-comment line)
+      2) DATABASE_URL environment variable
+      3) db_connection.txt at workspace root (fallback)
+      4) db_connection.txt inside backend folder (fallback)
+    """
+    # Prefer repo-root db_connection.txt
+    primary_file = REPO_ROOT / "db_connection.txt"
+    dsn = read_first_nonempty_line(primary_file)
+    if dsn:
+        return dsn
+
+    # Then environment variable
     env = os.getenv("DATABASE_URL")
     if env:
         return env
-    # Search in common locations for db_connection.txt
-    candidate_files = [
-        REPO_ROOT / "db_connection.txt",        # repo root (recommended per README)
-        WORKSPACE_ROOT / "db_connection.txt",   # workspace root fallback
-        BACKEND_ROOT / "db_connection.txt",     # backend folder fallback
-    ]
-    for c in candidate_files:
+
+    # Additional fallbacks
+    for c in [
+        WORKSPACE_ROOT / "db_connection.txt",
+        BACKEND_ROOT / "db_connection.txt",
+    ]:
         dsn = read_first_nonempty_line(c)
         if dsn:
             return dsn
@@ -866,6 +886,9 @@ def main():
     conn.close()
 
     report["verification"] = verification
+
+    # Also write counts-only report to top-level logs
+    COUNTS_REPORT_TOP.write_text(json.dumps(verification, indent=2))
 
     # Save/print
     REPORT_PATH.write_text(json.dumps(report, indent=2))
