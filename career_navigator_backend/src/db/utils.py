@@ -9,15 +9,67 @@ from psycopg2.extras import execute_batch
 
 # PUBLIC_INTERFACE
 def get_database_url() -> Optional[str]:
-    """Return DATABASE_URL from environment or None if not set."""
-    return os.getenv("DATABASE_URL")
+    """
+    Return a Postgres DSN using the same precedence as direct seeding scripts:
+      1) db_connection.txt at repository root (executive-career-pathway-planner-215270/db_connection.txt)
+      2) DATABASE_URL environment variable
+      3) db_connection.txt at workspace root (fallback)
+      4) db_connection.txt inside backend folder (fallback)
+    The first non-empty, non-comment line is used when reading db_connection.txt.
+    """
+    from pathlib import Path
+
+    def _read_first_nonempty_line(p: Path) -> Optional[str]:
+        if not p.exists():
+            return None
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            return s
+        return None
+
+    here = Path(__file__).resolve()
+    backend_root = here.parents[2]          # .../career_navigator_backend
+    repo_root = here.parents[3]             # .../executive-career-pathway-planner-215270
+    workspace_root = here.parents[4]        # .../code-generation
+
+    # Prefer repo-root db_connection.txt
+    primary_file = repo_root / "db_connection.txt"
+    dsn = _read_first_nonempty_line(primary_file)
+    if dsn:
+        return dsn
+
+    # Then environment variable
+    env_dsn = os.getenv("DATABASE_URL")
+    if env_dsn:
+        return env_dsn
+
+    # Fallback files
+    for candidate in [
+        workspace_root / "db_connection.txt",
+        backend_root / "db_connection.txt",
+    ]:
+        dsn = _read_first_nonempty_line(candidate)
+        if dsn:
+            return dsn
+
+    return None
 
 
+# PUBLIC_INTERFACE
 def get_conn():
-    """Create and return a psycopg2 connection using DATABASE_URL."""
+    """
+    Create and return a psycopg2 connection using the resolved DSN.
+
+    Raises:
+        RuntimeError: if no connection info is found via db_connection.txt or DATABASE_URL.
+    """
     url = get_database_url()
     if not url:
-        raise RuntimeError("DATABASE_URL is required for seeding/migrations.")
+        raise RuntimeError(
+            "Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root."
+        )
     return psycopg2.connect(url)
 
 
