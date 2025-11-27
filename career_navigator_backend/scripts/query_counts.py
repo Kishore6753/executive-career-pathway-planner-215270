@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Dict
 
 import psycopg2
+from dotenv import load_dotenv
 
 HERE = Path(__file__).resolve()
 BACKEND_ROOT = HERE.parents[1]
@@ -57,21 +58,28 @@ def read_first_nonempty_line(p: Path) -> Optional[str]:
 def get_database_url() -> Optional[str]:
     """
     Precedence:
-      1) db_connection.txt at repository root
-      2) DATABASE_URL environment variable
+      1) DATABASE_URL environment variable (after loading .env)
+      2) db_connection.txt at repository root
       3) db_connection.txt at workspace root (fallback)
       4) db_connection.txt inside backend folder (fallback)
     """
-    # Prefer repo-root db_connection.txt
+    try:
+        load_dotenv(override=False)
+        for candidate in [REPO_ROOT / ".env", WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"]:
+            load_dotenv(dotenv_path=candidate, override=False)
+    except Exception:
+        pass
+
+    # Prefer environment
+    env = os.getenv("DATABASE_URL")
+    if env:
+        return env
+
+    # Then repo-root db_connection.txt
     primary_file = REPO_ROOT / "db_connection.txt"
     dsn = read_first_nonempty_line(primary_file)
     if dsn:
         return dsn
-
-    # Then environment
-    env = os.getenv("DATABASE_URL")
-    if env:
-        return env
 
     # Fallback files
     for candidate in [

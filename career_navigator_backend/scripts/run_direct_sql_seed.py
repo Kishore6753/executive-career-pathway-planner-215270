@@ -34,9 +34,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import argparse
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
+from dotenv import load_dotenv
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, quote_plus
 
 
 # ---------- Paths and constants ----------
@@ -391,40 +394,99 @@ def get_database_url() -> Optional[str]:
     """
     Determine database connection string.
 
-    Precedence:
-      1) db_connection.txt at repository root (first non-empty, non-comment line)
-      2) DATABASE_URL environment variable
-      3) db_connection.txt at workspace root (fallback)
-      4) db_connection.txt inside backend folder (fallback)
+    New precedence (env-first):
+      1) DATABASE_URL environment variable (after loading .env)
+      2) Build from individual env vars (DB_HOST/PGHOST/POSTGRES_HOST, etc.)
+      3) db_connection.txt at repository root
+      4) db_connection.txt at workspace root (fallback)
+      5) db_connection.txt inside backend folder (fallback)
     """
-    # Prefer repo-root db_connection.txt
-    primary_file = REPO_ROOT / "db_connection.txt"
-    dsn = read_first_nonempty_line(primary_file)
-    if dsn:
-        return dsn
+    # Load .env files from common locations
+    try:
+        load_dotenv(override=False)
+        for candidate in [REPO_ROOT / ".env", WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"]:
+            load_dotenv(dotenv_path=candidate, override=False)
+    except Exception:
+        pass
 
-    # Then environment variable
-    env = os.getenv("DATABASE_URL")
-    if env:
-        return env
+    def _env_map() -> Dict[str, str]:
+        return {k.upper(): v for k, v in os.environ.items() if isinstance(v, str)}
 
-    # Additional fallbacks
+    env = _env_map()
+
+    # 1) DATABASE_URL
+    env_dsn = env.get("DATABASE_URL")
+    if env_dsn and str(env_dsn).strip():
+        return env_dsn.strip()
+
+    # 2) Build from parts
+    def pick(*names: str) -> Optional[str]:
+        for n in names:
+            if n in env and str(env[n]).strip():
+                return str(env[n]).strip()
+        return None
+
+    host = pick("DB_HOST", "PGHOST", "POSTGRES_HOST")
+    port = pick("DB_PORT", "PGPORT", "POSTGRES_PORT") or "5432"
+    dbname = pick("DB_NAME", "DBNAME", "PGDATABASE", "POSTGRES_DB")
+    user = pick("DB_USER", "PGUSER", "POSTGRES_USER", "USER", "USERNAME")
+    password = pick("DB_PASSWORD", "PGPASSWORD", "POSTGRES_PASSWORD", "PASSWORD")
+    sslmode = pick("SSLMODE", "SSL_MODE", "PGSSLMODE", "POSTGRES_SSLMODE")
+
+    if all([host, dbname, user, password]):
+        pw_enc = quote_plus(password)
+        built = f"postgresql://{user}:{pw_enc}@{host}:{port}/{dbname}"
+        if sslmode:
+            sep = "&" if "?" in built else "?"
+            built = f"{built}{sep}sslmode={sslmode}"
+        return built
+
+    # 3) 4) 5) Files
     for c in [
+        REPO_ROOT / "db_connection.txt",
         WORKSPACE_ROOT / "db_connection.txt",
         BACKEND_ROOT / "db_connection.txt",
     ]:
-        dsn = read_first_nonempty_line(c)
-        if dsn:
-            return dsn
+        d = read_first_nonempty_line(c)
+        if d:
+            return d
     return None
 
 
-def connect() -> "psycopg2.extensions.connection":
-    dsn = get_database_url()
+def _is_supabase_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    h = str(host).lower()
+    return h.endswith(".supabase.co") or ".supabase.co" in h
+
+
+def _ensure_sslmode_required(dsn: str) -> str:
+    """Append sslmode=require for Supabase DSNs if not present."""
+    try:
+        parsed = urlparse(dsn)
+        host = parsed.hostname or ""
+        query = dict(parse_qsl(parsed.query))
+        if _is_supabase_host(host) and "sslmode" not in query:
+            query["sslmode"] = "require"
+            dsn = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(query), parsed.fragment))
+        return dsn
+    except Exception:
+        # keyword style dsn or parse error: best-effort append
+        low = dsn.lower()
+        if "sslmode=" not in low:
+            dsn += " sslmode=require"
+        return dsn
+
+
+def connect(dsn_override: Optional[str] = None) -> "psycopg2.extensions.connection":
+    """
+    Create a psycopg2 connection using override DSN, env/database_url, or file.
+    Ensures sslmode=require when connecting to Supabase if not specified.
+    """
+    dsn = dsn_override or get_database_url()
     if not dsn:
-        raise RuntimeError(
-            "Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root."
-        )
+        raise RuntimeError("Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root.")
+    dsn = _ensure_sslmode_required(dsn)
     return psycopg2.connect(dsn)
 
 
@@ -764,8 +826,19 @@ def upsert_role_cards(conn, card_aggs: List[RoleCardAggregate]) -> int:
 
 
 # PUBLIC_INTERFACE
-def main():
-    """Run direct DDL and data seeding, then print/write verification counts."""
+def main(dsn_override: Optional[str] = None):
+    """Run direct DDL and data seeding, then print/write verification counts.
+
+    Parameters:
+        dsn_override: Optional Postgres connection string to override env/file discovery.
+    """
+    # Load .env early
+    try:
+        load_dotenv(override=False)
+        for candidate in [REPO_ROOT / ".env", WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"]:
+            load_dotenv(dotenv_path=candidate, override=False)
+    except Exception:
+        pass
     report = {
         "ddl_results": [],
         "roles_upserted": 0,
@@ -850,7 +923,7 @@ def main():
         report["warnings"].append({"unmapped_role_cards": unmapped_cards})
 
     # Connect and run
-    conn = connect()
+    conn = connect(dsn_override)
 
     # DDL
     ddl_results = exec_ddl(conn, DDL_STATEMENTS)
@@ -904,8 +977,11 @@ def main():
 
 if __name__ == "__main__":
     # Provide a friendly error if DATABASE_URL not set and db_connection.txt missing
+    parser = argparse.ArgumentParser(description="Apply direct SQL schema and seed data from attachments.")
+    parser.add_argument("--dsn", dest="dsn", default=None, help="Optional DSN override (postgresql://...)")
+    args = parser.parse_args()
     try:
-        main()
+        main(dsn_override=args.dsn)
     except Exception as e:
         # Emit JSON so CI logs stay structured
         error_report = {"error": str(e)}
