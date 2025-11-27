@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import argparse
+import socket
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
@@ -481,13 +482,45 @@ def _ensure_sslmode_required(dsn: str) -> str:
 def connect(dsn_override: Optional[str] = None) -> "psycopg2.extensions.connection":
     """
     Create a psycopg2 connection using override DSN, env/database_url, or file.
-    Ensures sslmode=require when connecting to Supabase if not specified.
+    Ensures sslmode=require when connecting to Supabase if not specified, and
+    attempts an IPv4 fallback if IPv6 is unreachable.
     """
     dsn = dsn_override or get_database_url()
     if not dsn:
         raise RuntimeError("Missing database connection. Set DATABASE_URL or provide db_connection.txt at repo root.")
     dsn = _ensure_sslmode_required(dsn)
-    return psycopg2.connect(dsn)
+
+    # First attempt: default libpq resolution
+    try:
+        return psycopg2.connect(dsn)
+    except Exception:
+        # IPv4 fallback: resolve hostname to IPv4 and use hostaddr to avoid IPv6
+        try:
+            p = urlparse(dsn)
+            host = p.hostname
+            port = p.port or 5432
+            # Lookup IPv4 addresses only
+            addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if not addrs:
+                raise
+            ipv4 = addrs[0][4][0]
+
+            # Build keyword params preserving TLS host verification (host + hostaddr)
+            dbname = (p.path[1:] if p.path.startswith("/") else p.path) or None
+            params = {
+                "host": host,
+                "hostaddr": ipv4,
+                "port": port,
+                "dbname": dbname,
+                "user": p.username,
+                "password": p.password,
+            }
+            q = dict(parse_qsl(p.query))
+            params["sslmode"] = q.get("sslmode", "require")
+            return psycopg2.connect(**params)
+        except Exception as e:
+            # Re-raise the original failure if fallback also fails
+            raise e
 
 
 def exec_ddl(conn, statements: List[str]) -> List[Tuple[str, Optional[str]]]:
